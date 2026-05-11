@@ -182,18 +182,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "Выбери урок, чтобы начать:"
     )
     if LOGO_PATH:
-        await update.message.reply_photo(
-            photo=open(LOGO_PATH, "rb"),
-            caption=welcome,
-            reply_markup=main_menu_keyboard(progress, user.id),
-            parse_mode="HTML",
-        )
-    else:
-        await update.message.reply_text(
-            welcome,
-            reply_markup=main_menu_keyboard(progress, user.id),
-            parse_mode="HTML",
-        )
+        await update.message.reply_photo(photo=open(LOGO_PATH, "rb"))
+    await update.message.reply_text(
+        welcome,
+        reply_markup=main_menu_keyboard(progress, user.id),
+        parse_mode="HTML",
+    )
     return MAIN_MENU
 
 
