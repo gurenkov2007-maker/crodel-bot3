@@ -175,7 +175,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     """Обработка команды /help."""
     text = (
         "📖 <b>Как пользоваться ботом</b>\n"
-        "─" * 30 + "\n\n"
+        + "─" * 30 + "\n\n"
         "🔹 <b>/start</b> — главное меню\n"
         "🔹 <b>/help</b> — эта справка\n"
         "🔹 <b>/reset</b> — сбросить весь прогресс\n\n"
@@ -244,7 +244,7 @@ async def show_lesson(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     header = (
         f"📚 <b>Урок {lesson_idx + 1} из {total}</b>\n"
         f"<b>{lesson['title']}</b>\n"
-        "─" * 30 + "\n\n"
+        + "─" * 30 + "\n\n"
     )
 
     text = header + lesson["text"]
@@ -393,7 +393,7 @@ async def ask_question(
     header = (
         f"📝 <b>{lesson['title']}</b>\n"
         f"Вопрос {question_idx + 1}/{total_q}  {bar}\n"
-        "─" * 28 + "\n\n"
+        + "─" * 28 + "\n\n"
         f"{q['question']}"
     )
 
