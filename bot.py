@@ -11,6 +11,7 @@ from telegram.ext import (
     ConversationHandler,
 )
 from datetime import datetime
+from pathlib import Path
 import sheets
 import content
 
@@ -31,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "1305122122"))
 MAX_MSG_LEN = 4096
+LOGO_PATH = next(
+    (p for p in [Path("logo.png"), Path("logo.jpg"), Path("logo.webp")] if p.exists()),
+    None,
+)
 
 
 # ─────────────────────────────────────────────
@@ -163,11 +168,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         f"✅ Пройдено: <b>{done}/{total}</b>\n\n"
         "Выбери урок, чтобы начать:"
     )
-    await update.message.reply_text(
-        welcome,
-        reply_markup=main_menu_keyboard(progress),
-        parse_mode="HTML",
-    )
+    if LOGO_PATH:
+        await update.message.reply_photo(
+            photo=open(LOGO_PATH, "rb"),
+            caption=welcome,
+            reply_markup=main_menu_keyboard(progress),
+            parse_mode="HTML",
+        )
+    else:
+        await update.message.reply_text(
+            welcome,
+            reply_markup=main_menu_keyboard(progress),
+            parse_mode="HTML",
+        )
     return MAIN_MENU
 
 
