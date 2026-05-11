@@ -100,7 +100,7 @@ def lessons_keyboard(current_lesson: int, progress: dict) -> InlineKeyboardMarku
     return InlineKeyboardMarkup(buttons)
 
 
-def main_menu_keyboard(progress: dict) -> InlineKeyboardMarkup:
+def main_menu_keyboard(progress: dict, user_id: int = 0) -> InlineKeyboardMarkup:
     total = len(content.LESSONS)
     scores = progress.get("quiz_scores", {})
     done = len(scores)
@@ -118,6 +118,12 @@ def main_menu_keyboard(progress: dict) -> InlineKeyboardMarkup:
     bar = progress_bar(done, total)
     buttons.append([InlineKeyboardButton(f"📊 Прогресс {bar} {done}/{total}", callback_data="my_progress")])
     buttons.append([InlineKeyboardButton("❓ Помощь", callback_data="help")])
+
+    if user_id == ADMIN_ID:
+        buttons.append([
+            InlineKeyboardButton("👨‍💼 Админ-панель", callback_data="admin_panel"),
+            InlineKeyboardButton("📋 Отчёт", callback_data="admin_report"),
+        ])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -179,13 +185,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_photo(
             photo=open(LOGO_PATH, "rb"),
             caption=welcome,
-            reply_markup=main_menu_keyboard(progress),
+            reply_markup=main_menu_keyboard(progress, user.id),
             parse_mode="HTML",
         )
     else:
         await update.message.reply_text(
             welcome,
-            reply_markup=main_menu_keyboard(progress),
+            reply_markup=main_menu_keyboard(progress, user.id),
             parse_mode="HTML",
         )
     return MAIN_MENU
@@ -244,7 +250,7 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"📚 <b>Главное меню</b>\n"
         f"Пройдено: {done}/{total}\n\n"
         f"Выбери урок:",
-        reply_markup=main_menu_keyboard(progress),
+        reply_markup=main_menu_keyboard(progress, update.effective_user.id),
         parse_mode="HTML",
     )
     return MAIN_MENU
@@ -634,16 +640,27 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 # Админ-команды
 # ─────────────────────────────────────────────
 
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Панель администратора: статистика по ученикам."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Доступ только для администратора.")
-        return
+        if query:
+            await query.edit_message_text("⛔ Доступ только для администратора.")
+        else:
+            await update.message.reply_text("⛔ Доступ только для администратора.")
+        return MAIN_MENU
 
     user_data = context.application.user_data
     if not user_data:
-        await update.message.reply_text("📭 Пока нет учеников.")
-        return
+        text = "📭 Пока нет учеников."
+        if query:
+            await query.edit_message_text(text)
+        else:
+            await update.message.reply_text(text)
+        return MAIN_MENU
 
     total_lessons = len(content.LESSONS)
     students = []
@@ -662,7 +679,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         students.append((name, username, done, scores, last))
 
     lines = [
-        f"👨\u200d💼 <b>Панель администратора</b>",
+        f"👨‍💼 <b>Панель администратора</b>",
         f"👥 Учеников: <b>{len(students)}</b>",
         f"📚 Уроков в курсе: <b>{total_lessons}</b>",
         "",
@@ -678,21 +695,35 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         lines.append("")
 
+    lines.append("\n🏠 /start — вернуться в меню")
+
     await send_long_text(
         update.effective_chat.id, "\n".join(lines), context, parse_mode="HTML"
     )
+    return MAIN_MENU
 
 
-async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Итоговый отчёт по всем ученикам: кто прошёл, баллы, слабые места."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Доступ только для администратора.")
-        return
+        if query:
+            await query.edit_message_text("⛔ Доступ только для администратора.")
+        else:
+            await update.message.reply_text("⛔ Доступ только для администратора.")
+        return MAIN_MENU
 
     user_data = context.application.user_data
     if not user_data:
-        await update.message.reply_text("📭 Пока нет учеников.")
-        return
+        text = "📭 Пока нет учеников."
+        if query:
+            await query.edit_message_text(text)
+        else:
+            await update.message.reply_text(text)
+        return MAIN_MENU
 
     total_lessons = len(content.LESSONS)
     completed = []    # прошли все уроки
@@ -770,9 +801,12 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     f"{stats['wrong']} ошибок из {stats['total']} ответов"
                 )
 
+    lines.append("\n🏠 /start — вернуться в меню")
+
     await send_long_text(
         update.effective_chat.id, "\n".join(lines), context, parse_mode="HTML"
     )
+    return MAIN_MENU
 
 
 # ─────────────────────────────────────────────
@@ -859,6 +893,8 @@ def main():
                 CallbackQueryHandler(my_progress, pattern="^my_progress$"),
                 CallbackQueryHandler(help_command, pattern="^help$"),
                 CallbackQueryHandler(start_quiz, pattern=r"^start_quiz_\d+$"),
+                CallbackQueryHandler(admin_command, pattern="^admin_panel$"),
+                CallbackQueryHandler(report_command, pattern="^admin_report$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_text),
             ],
             VIEWING_LESSON: [
@@ -883,13 +919,13 @@ def main():
             CommandHandler("start", start),
             CommandHandler("help", help_command),
             CommandHandler("reset", reset_command),
+            CommandHandler("admin", admin_command),
+            CommandHandler("report", report_command),
         ],
         per_message=False,
     )
 
     app.add_handler(conv_handler)
-    app.add_handler(CommandHandler("admin", admin_command))
-    app.add_handler(CommandHandler("report", report_command))
 
     # Напоминания каждый час (проверяет кто не заходил 24ч)
     app.job_queue.run_repeating(send_reminders, interval=3600, first=60)
