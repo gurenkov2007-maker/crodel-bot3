@@ -1,6 +1,7 @@
 import logging
 import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -75,6 +76,19 @@ def score_emoji(score: int, total: int) -> str:
         return "👍"
     else:
         return "📚"
+
+
+async def safe_edit_or_send(query, text, context, reply_markup=None, parse_mode="HTML"):
+    """Try edit_message_text, fallback to send_message if message is a photo."""
+    try:
+        await query.edit_message_text(
+            text, reply_markup=reply_markup, parse_mode=parse_mode,
+        )
+    except BadRequest:
+        await context.bot.send_message(
+            query.message.chat_id, text,
+            reply_markup=reply_markup, parse_mode=parse_mode,
+        )
 
 
 def lessons_keyboard(current_lesson: int, progress: dict) -> InlineKeyboardMarkup:
@@ -215,12 +229,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
     elif update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
-            text,
+        await safe_edit_or_send(
+            update.callback_query, text, context,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🏠 Меню", callback_data="main_menu")]
             ]),
-            parse_mode="HTML",
         )
     return MAIN_MENU
 
@@ -240,12 +253,13 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     progress = get_user_progress(context)
     done = len(progress.get("quiz_scores", {}))
     total = len(content.LESSONS)
-    await query.edit_message_text(
+    await safe_edit_or_send(
+        query,
         f"📚 <b>Главное меню</b>\n"
         f"Пройдено: {done}/{total}\n\n"
         f"Выбери урок:",
+        context,
         reply_markup=main_menu_keyboard(progress, update.effective_user.id),
-        parse_mode="HTML",
     )
     return MAIN_MENU
 
@@ -271,13 +285,8 @@ async def show_lesson(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     keyboard = lessons_keyboard(lesson_idx, progress)
 
     if len(text) <= MAX_MSG_LEN:
-        await query.edit_message_text(
-            text,
-            reply_markup=keyboard,
-            parse_mode="HTML",
-        )
+        await safe_edit_or_send(query, text, context, reply_markup=keyboard)
     else:
-        # Удаляем старое сообщение и отправляем длинный текст частями
         try:
             await query.delete_message()
         except Exception:
@@ -320,12 +329,11 @@ async def my_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     else:
         lines.append("<b>Пока нет результатов</b>")
 
-    await query.edit_message_text(
-        "\n".join(lines),
+    await safe_edit_or_send(
+        query, "\n".join(lines), context,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Меню", callback_data="main_menu")]
         ]),
-        parse_mode="HTML",
     )
     return MAIN_MENU
 
@@ -343,8 +351,8 @@ async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     questions = lesson.get("questions", [])
 
     if not questions:
-        await query.edit_message_text(
-            "❗ Для этого урока ещё нет вопросов.",
+        await safe_edit_or_send(
+            query, "❗ Для этого урока ещё нет вопросов.", context,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🏠 Меню", callback_data="main_menu")]
             ]),
@@ -366,16 +374,17 @@ async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if score_info is not None:
         prev_result = f"\n\n📊 Предыдущий результат: <b>{score_info['score']}/{score_info['total']}</b>"
 
-    await query.edit_message_text(
+    await safe_edit_or_send(
+        query,
         f"📝 <b>Тест: {lesson['title']}</b>\n\n"
         f"Вопросов: <b>{len(questions)}</b> ({', '.join(info_parts)})"
         f"{prev_result}\n\n"
         f"Готов начать?",
+        context,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("▶ Начать тест", callback_data=f"confirm_quiz_{lesson_idx}")],
             [InlineKeyboardButton("◀ Назад к уроку", callback_data=f"lesson_{lesson_idx}")],
         ]),
-        parse_mode="HTML",
     )
     return QUIZ_CONFIRM
 
@@ -426,9 +435,7 @@ async def ask_question(
         markup = InlineKeyboardMarkup(buttons)
 
         if edit and update.callback_query:
-            await update.callback_query.edit_message_text(
-                header, reply_markup=markup, parse_mode="HTML"
-            )
+            await safe_edit_or_send(update.callback_query, header, context, reply_markup=markup)
         else:
             chat_id = update.effective_chat.id
             await context.bot.send_message(chat_id, header, reply_markup=markup, parse_mode="HTML")
@@ -438,7 +445,7 @@ async def ask_question(
     else:  # open
         prompt = header + "\n\n✏️ <i>Напиши свой ответ в чат:</i>"
         if edit and update.callback_query:
-            await update.callback_query.edit_message_text(prompt, parse_mode="HTML")
+            await safe_edit_or_send(update.callback_query, prompt, context)
         else:
             await context.bot.send_message(update.effective_chat.id, prompt, parse_mode="HTML")
 
@@ -472,7 +479,7 @@ async def handle_choice_answer(update: Update, context: ContextTypes.DEFAULT_TYP
     if q.get("explanation"):
         feedback += f"\n\n💡 <i>{q['explanation']}</i>"
 
-    await query.edit_message_text(feedback, parse_mode="HTML")
+    await safe_edit_or_send(query, feedback, context)
 
     progress["current_quiz_q"] = q_idx + 1
     return await next_question_or_finish(update, context)
