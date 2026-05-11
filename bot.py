@@ -9,6 +9,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
     ConversationHandler,
+    PicklePersistence,
 )
 from datetime import datetime
 from pathlib import Path
@@ -159,6 +160,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     done = len(progress.get("quiz_scores", {}))
     total = len(content.LESSONS)
+
+    # Трекаем активность для напоминаний
+    context.user_data["user_id"] = user.id
+    context.user_data["username"] = user.username or user.first_name
+    context.user_data["first_name"] = user.first_name
+    context.user_data["last_activity"] = datetime.now().isoformat()
 
     welcome = (
         f"👋 Привет, {user.first_name}!\n\n"
@@ -507,6 +514,7 @@ async def next_question_or_finish(update: Update, context: ContextTypes.DEFAULT_
 
 async def finish_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     progress = get_user_progress(context)
+    context.user_data["last_activity"] = datetime.now().isoformat()
     lesson_idx = progress["current_lesson"]
     lesson = content.LESSONS[lesson_idx]
     answers = progress["current_quiz_answers"]
@@ -623,12 +631,220 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 # ─────────────────────────────────────────────
+# Админ-команды
+# ─────────────────────────────────────────────
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Панель администратора: статистика по ученикам."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Доступ только для администратора.")
+        return
+
+    user_data = context.application.user_data
+    if not user_data:
+        await update.message.reply_text("📭 Пока нет учеников.")
+        return
+
+    total_lessons = len(content.LESSONS)
+    students = []
+    for uid, data in user_data.items():
+        name = data.get("first_name", data.get("username", f"ID:{uid}"))
+        username = data.get("username", "—")
+        progress = data.get("progress", {})
+        scores = progress.get("quiz_scores", {})
+        done = len(scores)
+        last = data.get("last_activity", "—")
+        if isinstance(last, str) and last != "—":
+            try:
+                last = datetime.fromisoformat(last).strftime("%d.%m %H:%M")
+            except Exception:
+                pass
+        students.append((name, username, done, scores, last))
+
+    lines = [
+        f"👨\u200d💼 <b>Панель администратора</b>",
+        f"👥 Учеников: <b>{len(students)}</b>",
+        f"📚 Уроков в курсе: <b>{total_lessons}</b>",
+        "",
+    ]
+    for name, username, done, scores, last in students:
+        total_score = sum(s["score"] for s in scores.values())
+        total_q = sum(s["total"] for s in scores.values())
+        avg = f"{round(total_score / total_q * 100)}%" if total_q > 0 else "—"
+        lines.append(
+            f"👤 <b>{name}</b> (@{username})\n"
+            f"   📊 Пройдено: {done}/{total_lessons} | Средний балл: {avg}\n"
+            f"   🕐 Последняя активность: {last}"
+        )
+        lines.append("")
+
+    await send_long_text(
+        update.effective_chat.id, "\n".join(lines), context, parse_mode="HTML"
+    )
+
+
+async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Итоговый отчёт по всем ученикам: кто прошёл, баллы, слабые места."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Доступ только для администратора.")
+        return
+
+    user_data = context.application.user_data
+    if not user_data:
+        await update.message.reply_text("📭 Пока нет учеников.")
+        return
+
+    total_lessons = len(content.LESSONS)
+    completed = []    # прошли все уроки
+    in_progress = []  # в процессе
+    inactive = []     # не начали или давно не заходили
+
+    # Статистика ошибок по урокам
+    lesson_errors = {}  # {lesson_idx: {"wrong": int, "total": int}}
+
+    for uid, data in user_data.items():
+        name = data.get("first_name", data.get("username", f"ID:{uid}"))
+        username = data.get("username", "—")
+        progress = data.get("progress", {})
+        scores = progress.get("quiz_scores", {})
+        done = len(scores)
+
+        total_score = sum(s["score"] for s in scores.values())
+        total_q = sum(s["total"] for s in scores.values())
+        avg = f"{round(total_score / total_q * 100)}%" if total_q > 0 else "—"
+
+        entry = f"👤 {name} (@{username}) — {done}/{total_lessons} уроков, балл: {avg}"
+
+        # Считаем ошибки по урокам
+        for li, s in scores.items():
+            li_int = int(li) if isinstance(li, str) else li
+            if li_int not in lesson_errors:
+                lesson_errors[li_int] = {"wrong": 0, "total": 0}
+            lesson_errors[li_int]["wrong"] += s["total"] - s["score"]
+            lesson_errors[li_int]["total"] += s["total"]
+
+        if done >= total_lessons:
+            completed.append(entry)
+        elif done > 0:
+            in_progress.append(entry)
+        else:
+            inactive.append(entry)
+
+    lines = [
+        "📋 <b>ИТОГОВЫЙ ОТЧЁТ ПО УЧЕНИКАМ</b>",
+        f"🕐 {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+        "",
+        f"👥 Всего учеников: <b>{len(user_data)}</b>",
+        f"✅ Завершили курс: <b>{len(completed)}</b>",
+        f"📖 В процессе: <b>{len(in_progress)}</b>",
+        f"⭕ Не начали / неактивны: <b>{len(inactive)}</b>",
+        "",
+    ]
+
+    if completed:
+        lines.append("<b>✅ Завершили курс:</b>")
+        lines.extend(completed)
+        lines.append("")
+    if in_progress:
+        lines.append("<b>📖 В процессе:</b>")
+        lines.extend(in_progress)
+        lines.append("")
+    if inactive:
+        lines.append("<b>⭕ Неактивны:</b>")
+        lines.extend(inactive)
+        lines.append("")
+
+    # Слабые места
+    if lesson_errors:
+        lines.append("<b>📉 Слабые места (больше всего ошибок):</b>")
+        sorted_errors = sorted(
+            lesson_errors.items(),
+            key=lambda x: x[1]["wrong"],
+            reverse=True,
+        )
+        for li, stats in sorted_errors[:5]:
+            if stats["wrong"] > 0 and li < total_lessons:
+                lesson_title = content.LESSONS[li]["title"]
+                lines.append(
+                    f"  ❌ {lesson_title} — "
+                    f"{stats['wrong']} ошибок из {stats['total']} ответов"
+                )
+
+    await send_long_text(
+        update.effective_chat.id, "\n".join(lines), context, parse_mode="HTML"
+    )
+
+
+# ─────────────────────────────────────────────
+# Напоминания (24ч)
+# ─────────────────────────────────────────────
+
+async def send_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Проверяет всех учеников и отправляет напоминание если не заходили 24ч."""
+    user_data = context.application.user_data
+    now = datetime.now()
+    total_lessons = len(content.LESSONS)
+
+    for uid, data in user_data.items():
+        progress = data.get("progress", {})
+        scores = progress.get("quiz_scores", {})
+        done = len(scores)
+
+        # Не напоминать тем кто прошёл всё
+        if done >= total_lessons:
+            continue
+
+        last_str = data.get("last_activity")
+        if not last_str:
+            continue
+
+        try:
+            last = datetime.fromisoformat(last_str)
+        except Exception:
+            continue
+
+        hours_ago = (now - last).total_seconds() / 3600
+        if hours_ago < 24:
+            continue
+
+        # Не спамить — напоминаем максимум раз в 24ч
+        last_reminder = data.get("last_reminder")
+        if last_reminder:
+            try:
+                lr = datetime.fromisoformat(last_reminder)
+                if (now - lr).total_seconds() / 3600 < 24:
+                    continue
+            except Exception:
+                pass
+
+        current = progress.get("current_lesson", 0)
+        lesson_title = content.LESSONS[min(current, total_lessons - 1)]["title"]
+
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=(
+                    f"👋 Привет! Ты остановился на уроке <b>{current + 1}</b>: "
+                    f"{lesson_title}.\n\n"
+                    f"📚 Пройдено: {done}/{total_lessons}\n\n"
+                    "Продолжим? Нажми /start 💪"
+                ),
+                parse_mode="HTML",
+            )
+            data["last_reminder"] = now.isoformat()
+            logger.info(f"Напоминание отправлено: {uid}")
+        except Exception as e:
+            logger.warning(f"Не удалось отправить напоминание {uid}: {e}")
+
+
+# ─────────────────────────────────────────────
 # Запуск
 # ─────────────────────────────────────────────
 
 def main():
     token = os.environ["BOT_TOKEN"]
-    app = Application.builder().token(token).build()
+    persistence = PicklePersistence(filepath="bot_data.pickle")
+    app = Application.builder().token(token).persistence(persistence).build()
 
     conv_handler = ConversationHandler(
         entry_points=[
@@ -672,6 +888,12 @@ def main():
     )
 
     app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("admin", admin_command))
+    app.add_handler(CommandHandler("report", report_command))
+
+    # Напоминания каждый час (проверяет кто не заходил 24ч)
+    app.job_queue.run_repeating(send_reminders, interval=3600, first=60)
+
     logger.info("Бот запущен...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
