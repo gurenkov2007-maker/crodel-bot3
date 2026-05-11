@@ -24,11 +24,13 @@ logger = logging.getLogger(__name__)
 (
     MAIN_MENU,
     VIEWING_LESSON,
+    QUIZ_CONFIRM,
     QUIZ_CHOICE_QUESTION,
     QUIZ_OPEN_QUESTION,
-) = range(4)
+) = range(5)
 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "1305122122"))
+MAX_MSG_LEN = 4096
 
 
 # ─────────────────────────────────────────────
@@ -46,7 +48,30 @@ def get_user_progress(context: ContextTypes.DEFAULT_TYPE) -> dict:
     return context.user_data["progress"]
 
 
-def lessons_keyboard(current_lesson: int) -> InlineKeyboardMarkup:
+def progress_bar(done: int, total: int, length: int = 10) -> str:
+    """Визуальный прогресс-бар: ▓▓▓▓░░░░░░"""
+    if total == 0:
+        return "░" * length
+    filled = round(done / total * length)
+    return "▓" * filled + "░" * (length - filled)
+
+
+def score_emoji(score: int, total: int) -> str:
+    """Эмодзи-оценка результата."""
+    if total == 0:
+        return ""
+    pct = score / total * 100
+    if pct == 100:
+        return "🏆"
+    elif pct >= 80:
+        return "🌟"
+    elif pct >= 50:
+        return "👍"
+    else:
+        return "📚"
+
+
+def lessons_keyboard(current_lesson: int, progress: dict) -> InlineKeyboardMarkup:
     """Клавиатура для навигации по урокам."""
     total = len(content.LESSONS)
     buttons = []
@@ -59,25 +84,65 @@ def lessons_keyboard(current_lesson: int) -> InlineKeyboardMarkup:
     if nav:
         buttons.append(nav)
 
-    buttons.append([InlineKeyboardButton("📝 Пройти тест по этому уроку", callback_data=f"start_quiz_{current_lesson}")])
-    buttons.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
+    score_info = progress.get("quiz_scores", {}).get(current_lesson)
+    if score_info is not None:
+        quiz_label = f"🔄 Пересдать тест ({score_info['score']}/{score_info['total']})"
+    else:
+        quiz_label = "📝 Пройти тест"
+    buttons.append([InlineKeyboardButton(quiz_label, callback_data=f"start_quiz_{current_lesson}")])
+    buttons.append([InlineKeyboardButton("🏠 Меню", callback_data="main_menu")])
     return InlineKeyboardMarkup(buttons)
 
 
 def main_menu_keyboard(progress: dict) -> InlineKeyboardMarkup:
     total = len(content.LESSONS)
-    done = len(progress.get("quiz_scores", {}))
+    scores = progress.get("quiz_scores", {})
+    done = len(scores)
     buttons = []
     for i, lesson in enumerate(content.LESSONS):
-        score_info = progress["quiz_scores"].get(i)
+        score_info = scores.get(i)
+        num = f"{i+1:>2}"
         if score_info is not None:
-            label = f"✅ Урок {i+1}: {lesson['title']} ({score_info['score']}/{score_info['total']})"
+            emoji = score_emoji(score_info["score"], score_info["total"])
+            label = f"{emoji} {num}. {lesson['title']}  [{score_info['score']}/{score_info['total']}]"
         else:
-            label = f"📖 Урок {i+1}: {lesson['title']}"
+            label = f"📖 {num}. {lesson['title']}"
         buttons.append([InlineKeyboardButton(label, callback_data=f"lesson_{i}")])
 
-    buttons.append([InlineKeyboardButton(f"📊 Мой прогресс ({done}/{total})", callback_data="my_progress")])
+    bar = progress_bar(done, total)
+    buttons.append([InlineKeyboardButton(f"📊 Прогресс {bar} {done}/{total}", callback_data="my_progress")])
+    buttons.append([InlineKeyboardButton("❓ Помощь", callback_data="help")])
     return InlineKeyboardMarkup(buttons)
+
+
+async def send_long_text(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE,
+                         reply_markup=None, parse_mode="HTML"):
+    """Отправляет длинный текст, разбивая на части по абзацам."""
+    if len(text) <= MAX_MSG_LEN:
+        await context.bot.send_message(
+            chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode
+        )
+        return
+
+    parts = []
+    current = ""
+    for paragraph in text.split("\n"):
+        if len(current) + len(paragraph) + 1 > MAX_MSG_LEN - 50:
+            parts.append(current)
+            current = paragraph
+        else:
+            current = current + "\n" + paragraph if current else paragraph
+    if current:
+        parts.append(current)
+
+    for i, part in enumerate(parts):
+        is_last = i == len(parts) - 1
+        await context.bot.send_message(
+            chat_id,
+            part,
+            reply_markup=reply_markup if is_last else None,
+            parse_mode=parse_mode,
+        )
 
 
 # ─────────────────────────────────────────────
@@ -87,24 +152,80 @@ def main_menu_keyboard(progress: dict) -> InlineKeyboardMarkup:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     progress = get_user_progress(context)
     user = update.effective_user
-    await update.message.reply_text(
+    done = len(progress.get("quiz_scores", {}))
+    total = len(content.LESSONS)
+
+    welcome = (
         f"👋 Привет, {user.first_name}!\n\n"
-        "Добро пожаловать в курс обучения бизнес-ассистентов.\n\n"
-        "Здесь ты найдёшь учебные материалы и тесты по каждому уроку. "
-        "Результаты сохраняются автоматически.\n\n"
-        "Выбери урок:",
+        "Добро пожаловать в <b>CRODEL Training Bot</b> — "
+        "курс обучения бизнес-ассистентов.\n\n"
+        f"📚 Уроков: <b>{total}</b>\n"
+        f"✅ Пройдено: <b>{done}/{total}</b>\n\n"
+        "Выбери урок, чтобы начать:"
+    )
+    await update.message.reply_text(
+        welcome,
         reply_markup=main_menu_keyboard(progress),
+        parse_mode="HTML",
     )
     return MAIN_MENU
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка команды /help."""
+    text = (
+        "📖 <b>Как пользоваться ботом</b>\n"
+        "─" * 30 + "\n\n"
+        "🔹 <b>/start</b> — главное меню\n"
+        "🔹 <b>/help</b> — эта справка\n"
+        "🔹 <b>/reset</b> — сбросить весь прогресс\n\n"
+        "📚 <b>Уроки:</b> выбери урок в меню → прочитай материал → "
+        "пройди тест.\n\n"
+        "📝 <b>Тесты:</b> вопросы с выбором ответа + открытые вопросы. "
+        "Результаты сохраняются, можно пересдавать.\n\n"
+        "📊 <b>Прогресс:</b> отслеживай свои результаты в меню."
+    )
+    if update.message:
+        await update.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Меню", callback_data="main_menu")]
+            ]),
+            parse_mode="HTML",
+        )
+    elif update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Меню", callback_data="main_menu")]
+            ]),
+            parse_mode="HTML",
+        )
+    return MAIN_MENU
+
+
+async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Сброс прогресса пользователя."""
+    context.user_data.pop("progress", None)
+    await update.message.reply_text(
+        "🔄 Прогресс сброшен. Начинай заново!\n\nНажми /start чтобы продолжить.",
+    )
+    return ConversationHandler.END
 
 
 async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     progress = get_user_progress(context)
+    done = len(progress.get("quiz_scores", {}))
+    total = len(content.LESSONS)
     await query.edit_message_text(
-        "Выбери урок:",
+        f"📚 <b>Главное меню</b>\n"
+        f"Пройдено: {done}/{total}\n\n"
+        f"Выбери урок:",
         reply_markup=main_menu_keyboard(progress),
+        parse_mode="HTML",
     )
     return MAIN_MENU
 
@@ -120,20 +241,31 @@ async def show_lesson(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     lesson = content.LESSONS[lesson_idx]
     total = len(content.LESSONS)
 
-    header = f"📚 Урок {lesson_idx + 1} из {total}: {lesson['title']}\n"
-    header += "─" * 35 + "\n\n"
+    header = (
+        f"📚 <b>Урок {lesson_idx + 1} из {total}</b>\n"
+        f"<b>{lesson['title']}</b>\n"
+        "─" * 30 + "\n\n"
+    )
 
     text = header + lesson["text"]
+    keyboard = lessons_keyboard(lesson_idx, progress)
 
-    # Telegram ограничивает сообщение 4096 символами
-    if len(text) > 4096:
-        text = text[:4090] + "…"
+    if len(text) <= MAX_MSG_LEN:
+        await query.edit_message_text(
+            text,
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+    else:
+        # Удаляем старое сообщение и отправляем длинный текст частями
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+        await send_long_text(
+            update.effective_chat.id, text, context, reply_markup=keyboard
+        )
 
-    await query.edit_message_text(
-        text,
-        reply_markup=lessons_keyboard(lesson_idx),
-        parse_mode="HTML",
-    )
     return VIEWING_LESSON
 
 
@@ -143,22 +275,35 @@ async def my_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     progress = get_user_progress(context)
     scores = progress.get("quiz_scores", {})
     total_lessons = len(content.LESSONS)
+    done = len(scores)
 
-    lines = ["📊 <b>Твой прогресс</b>\n"]
+    total_score = sum(s["score"] for s in scores.values())
+    total_questions = sum(s["total"] for s in scores.values())
+
+    lines = [
+        "📊 <b>Твой прогресс</b>",
+        f"{progress_bar(done, total_lessons, 14)}  {done}/{total_lessons} уроков",
+        "",
+    ]
     for i, lesson in enumerate(content.LESSONS):
         if i in scores:
             s = scores[i]
-            lines.append(f"✅ Урок {i+1}: {lesson['title']} — {s['score']}/{s['total']}")
+            emoji = score_emoji(s["score"], s["total"])
+            lines.append(f"  {emoji} {i+1}. {lesson['title']} — <b>{s['score']}/{s['total']}</b>")
         else:
-            lines.append(f"⭕ Урок {i+1}: {lesson['title']} — не пройден")
+            lines.append(f"  ⭕ {i+1}. {lesson['title']}")
 
-    done = len(scores)
-    lines.append(f"\n<b>Пройдено: {done}/{total_lessons}</b>")
+    lines.append("")
+    if total_questions > 0:
+        overall_pct = round(total_score / total_questions * 100)
+        lines.append(f"<b>Общий балл: {total_score}/{total_questions} ({overall_pct}%)</b>")
+    else:
+        lines.append("<b>Пока нет результатов</b>")
 
     await query.edit_message_text(
         "\n".join(lines),
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+            [InlineKeyboardButton("🏠 Меню", callback_data="main_menu")]
         ]),
         parse_mode="HTML",
     )
@@ -174,11 +319,6 @@ async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await query.answer()
 
     lesson_idx = int(query.data.split("_")[2])
-    progress = get_user_progress(context)
-    progress["current_lesson"] = lesson_idx
-    progress["current_quiz_q"] = 0
-    progress["current_quiz_answers"] = []
-
     lesson = content.LESSONS[lesson_idx]
     questions = lesson.get("questions", [])
 
@@ -186,11 +326,52 @@ async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await query.edit_message_text(
             "❗ Для этого урока ещё нет вопросов.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+                [InlineKeyboardButton("🏠 Меню", callback_data="main_menu")]
             ]),
         )
         return MAIN_MENU
 
+    choice_count = sum(1 for q in questions if q["type"] == "choice")
+    open_count = sum(1 for q in questions if q["type"] == "open")
+
+    info_parts = []
+    if choice_count:
+        info_parts.append(f"с выбором: {choice_count}")
+    if open_count:
+        info_parts.append(f"открытых: {open_count}")
+
+    progress = get_user_progress(context)
+    score_info = progress.get("quiz_scores", {}).get(lesson_idx)
+    prev_result = ""
+    if score_info is not None:
+        prev_result = f"\n\n📊 Предыдущий результат: <b>{score_info['score']}/{score_info['total']}</b>"
+
+    await query.edit_message_text(
+        f"📝 <b>Тест: {lesson['title']}</b>\n\n"
+        f"Вопросов: <b>{len(questions)}</b> ({', '.join(info_parts)})"
+        f"{prev_result}\n\n"
+        f"Готов начать?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("▶ Начать тест", callback_data=f"confirm_quiz_{lesson_idx}")],
+            [InlineKeyboardButton("◀ Назад к уроку", callback_data=f"lesson_{lesson_idx}")],
+        ]),
+        parse_mode="HTML",
+    )
+    return QUIZ_CONFIRM
+
+
+async def confirm_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    lesson_idx = int(query.data.split("_")[2])
+    progress = get_user_progress(context)
+    progress["current_lesson"] = lesson_idx
+    progress["current_quiz_q"] = 0
+    progress["current_quiz_answers"] = []
+
+    lesson = content.LESSONS[lesson_idx]
+    questions = lesson.get("questions", [])
     context.user_data["quiz_questions"] = questions
     return await ask_question(update, context, question_idx=0, edit=True)
 
@@ -208,16 +389,18 @@ async def ask_question(
     total_q = len(questions)
     q = questions[question_idx]
 
+    bar = progress_bar(question_idx, total_q, 8)
     header = (
-        f"📝 <b>Тест: {lesson['title']}</b>\n"
-        f"Вопрос {question_idx + 1} из {total_q}\n"
-        "─" * 30 + "\n\n"
+        f"📝 <b>{lesson['title']}</b>\n"
+        f"Вопрос {question_idx + 1}/{total_q}  {bar}\n"
+        "─" * 28 + "\n\n"
         f"{q['question']}"
     )
 
     if q["type"] == "choice":
+        letters = ["A", "B", "C", "D", "E", "F"]
         buttons = [
-            [InlineKeyboardButton(opt, callback_data=f"answer_{i}")]
+            [InlineKeyboardButton(f"{letters[i]}. {opt}", callback_data=f"answer_{i}")]
             for i, opt in enumerate(q["options"])
         ]
         markup = InlineKeyboardMarkup(buttons)
@@ -227,7 +410,6 @@ async def ask_question(
                 header, reply_markup=markup, parse_mode="HTML"
             )
         else:
-            msg = update.callback_query or update.message
             chat_id = update.effective_chat.id
             await context.bot.send_message(chat_id, header, reply_markup=markup, parse_mode="HTML")
 
@@ -263,9 +445,12 @@ async def handle_choice_answer(update: Update, context: ContextTypes.DEFAULT_TYP
         "correct": is_correct,
     })
 
-    feedback = "✅ Верно!" if is_correct else f"❌ Неверно. Правильный ответ: <b>{q['options'][q['correct']]}</b>"
+    if is_correct:
+        feedback = "✅ <b>Верно!</b>"
+    else:
+        feedback = f"❌ <b>Неверно.</b>\nПравильный ответ: <b>{q['options'][q['correct']]}</b>"
     if q.get("explanation"):
-        feedback += f"\n\n💡 {q['explanation']}"
+        feedback += f"\n\n💡 <i>{q['explanation']}</i>"
 
     await query.edit_message_text(feedback, parse_mode="HTML")
 
@@ -288,7 +473,7 @@ async def handle_open_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     })
 
     await update.message.reply_text(
-        "📨 Ответ принят! Преподаватель проверит его позже.",
+        "📨 <b>Ответ принят!</b> Преподаватель проверит его позже.",
         parse_mode="HTML",
     )
 
@@ -350,25 +535,49 @@ async def finish_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         logger.error(f"Ошибка уведомления админа: {e}")
 
     # Итоговое сообщение пользователю
-    result_text = (
-        f"🏁 <b>Тест завершён!</b>\n\n"
-        f"Урок: <b>{lesson['title']}</b>\n"
-    )
+    emoji = score_emoji(correct, total_choice)
+    bar = progress_bar(correct, total_choice, 10) if total_choice > 0 else ""
+
+    result_text = f"🏁 <b>Тест завершён!</b>\n\n"
+    result_text += f"📚 {lesson['title']}\n"
+
     if total_choice > 0:
         pct = round(correct / total_choice * 100)
-        result_text += f"Тест с выбором: <b>{correct}/{total_choice}</b> ({pct}%)\n"
-    if open_count > 0:
-        result_text += f"Открытых ответов: <b>{open_count}</b> (проверит преподаватель)\n"
+        result_text += f"\n{bar}  {emoji}\n"
+        result_text += f"<b>{correct}/{total_choice}</b> правильных ({pct}%)\n"
+        if pct == 100:
+            result_text += "\n🎉 Отличный результат!"
+        elif pct >= 80:
+            result_text += "\n👏 Хорошо! Почти идеально."
+        elif pct >= 50:
+            result_text += "\n💪 Неплохо, но есть над чем поработать."
+        else:
+            result_text += "\n📖 Рекомендую перечитать урок и попробовать ещё раз."
 
-    result_text += "\nРезультаты сохранены! Продолжай обучение 💪"
+    if open_count > 0:
+        result_text += f"\n\n📝 Открытых ответов: <b>{open_count}</b> (проверит преподаватель)"
+
+    result_text += "\n\n✅ Результаты сохранены!"
 
     chat_id = update.effective_chat.id
+
+    # Кнопки после теста
+    next_lesson = lesson_idx + 1
+    after_buttons = []
+    if next_lesson < len(content.LESSONS):
+        after_buttons.append([InlineKeyboardButton(
+            f"▶ Следующий урок: {content.LESSONS[next_lesson]['title']}",
+            callback_data=f"lesson_{next_lesson}",
+        )])
+    after_buttons.append([
+        InlineKeyboardButton("🔄 Пересдать", callback_data=f"start_quiz_{lesson_idx}"),
+        InlineKeyboardButton("🏠 Меню", callback_data="main_menu"),
+    ])
+
     await context.bot.send_message(
         chat_id,
         result_text,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-        ]),
+        reply_markup=InlineKeyboardMarkup(after_buttons),
         parse_mode="HTML",
     )
     return MAIN_MENU
@@ -376,20 +585,28 @@ async def finish_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 def build_admin_summary(user, lesson, lesson_idx, correct, total_choice, answers) -> str:
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    pct = f" ({round(correct / total_choice * 100)}%)" if total_choice > 0 else ""
     lines = [
         f"📬 <b>Новый результат теста</b>",
         f"👤 {user.first_name} (@{user.username or '—'}, ID: {user.id})",
         f"📚 Урок {lesson_idx + 1}: {lesson['title']}",
+        f"📊 Результат: <b>{correct}/{total_choice}</b>{pct}",
         f"🕐 {now}",
         "",
     ]
-    if total_choice > 0:
-        lines.append(f"<b>Тест с выбором: {correct}/{total_choice}</b>")
     for i, a in enumerate(answers, 1):
         mark = "✅" if a["correct"] is True else ("❌" if a["correct"] is False else "📝")
-        lines.append(f"\n{mark} Вопрос {i}: {a['question']}")
-        lines.append(f"   Ответ: {a['answer']}")
+        lines.append(f"{mark} <b>Q{i}:</b> {a['question'][:80]}")
+        lines.append(f"    → {a['answer'][:200]}")
     return "\n".join(lines)
+
+
+async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка неожиданных текстовых сообщений."""
+    await update.message.reply_text(
+        "🤔 Не понимаю. Используй кнопки для навигации или нажми /start",
+    )
+    return MAIN_MENU
 
 
 # ─────────────────────────────────────────────
@@ -401,16 +618,29 @@ def main():
     app = Application.builder().token(token).build()
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            CommandHandler("help", help_command),
+            CommandHandler("reset", reset_command),
+        ],
         states={
             MAIN_MENU: [
                 CallbackQueryHandler(show_lesson, pattern=r"^lesson_\d+$"),
                 CallbackQueryHandler(main_menu_handler, pattern="^main_menu$"),
                 CallbackQueryHandler(my_progress, pattern="^my_progress$"),
+                CallbackQueryHandler(help_command, pattern="^help$"),
+                CallbackQueryHandler(start_quiz, pattern=r"^start_quiz_\d+$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_text),
             ],
             VIEWING_LESSON: [
                 CallbackQueryHandler(show_lesson, pattern=r"^lesson_\d+$"),
                 CallbackQueryHandler(start_quiz, pattern=r"^start_quiz_\d+$"),
+                CallbackQueryHandler(main_menu_handler, pattern="^main_menu$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_text),
+            ],
+            QUIZ_CONFIRM: [
+                CallbackQueryHandler(confirm_quiz, pattern=r"^confirm_quiz_\d+$"),
+                CallbackQueryHandler(show_lesson, pattern=r"^lesson_\d+$"),
                 CallbackQueryHandler(main_menu_handler, pattern="^main_menu$"),
             ],
             QUIZ_CHOICE_QUESTION: [
@@ -420,7 +650,11 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_open_answer),
             ],
         },
-        fallbacks=[CommandHandler("start", start)],
+        fallbacks=[
+            CommandHandler("start", start),
+            CommandHandler("help", help_command),
+            CommandHandler("reset", reset_command),
+        ],
         per_message=False,
     )
 
