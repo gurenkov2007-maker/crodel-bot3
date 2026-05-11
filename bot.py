@@ -646,20 +646,15 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if query:
         await query.answer()
 
+    chat_id = update.effective_chat.id
+
     if update.effective_user.id != ADMIN_ID:
-        if query:
-            await query.edit_message_text("⛔ Доступ только для администратора.")
-        else:
-            await update.message.reply_text("⛔ Доступ только для администратора.")
+        await context.bot.send_message(chat_id, "⛔ Доступ только для администратора.")
         return MAIN_MENU
 
     user_data = context.application.user_data
     if not user_data:
-        text = "📭 Пока нет учеников."
-        if query:
-            await query.edit_message_text(text)
-        else:
-            await update.message.reply_text(text)
+        await context.bot.send_message(chat_id, "📭 Пока нет учеников.")
         return MAIN_MENU
 
     total_lessons = len(content.LESSONS)
@@ -709,20 +704,15 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if query:
         await query.answer()
 
+    chat_id = update.effective_chat.id
+
     if update.effective_user.id != ADMIN_ID:
-        if query:
-            await query.edit_message_text("⛔ Доступ только для администратора.")
-        else:
-            await update.message.reply_text("⛔ Доступ только для администратора.")
+        await context.bot.send_message(chat_id, "⛔ Доступ только для администратора.")
         return MAIN_MENU
 
     user_data = context.application.user_data
     if not user_data:
-        text = "📭 Пока нет учеников."
-        if query:
-            await query.edit_message_text(text)
-        else:
-            await update.message.reply_text(text)
+        await context.bot.send_message(chat_id, "📭 Пока нет учеников.")
         return MAIN_MENU
 
     total_lessons = len(content.LESSONS)
